@@ -144,6 +144,9 @@ class recorder:
         self.save_beat.cancel()
         rel.abort()
 
+    def get_most_recent_HR(self):
+        return self.data.loc[self.data.TIMESTAMP == self.data.TIMESTAMP.max()]
+
 
 if __name__ == "__main__":
     load_dotenv()

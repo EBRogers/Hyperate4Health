@@ -1,15 +1,24 @@
-import json, os, time
+import argparse
+import json
+import os
+import time
+from csv import writer
 from threading import Timer
-import websocket
-import rel
-import pandas as pd
 
+import pandas as pd
+import rel
+import websocket
 from dotenv import load_dotenv
 
 
+# This program was written by Ethan Rogers (Personal Health Informatics, Northeastern University, Boston, MA)
+# https://github.com/EBRogers/Hyperate4Health
+# Special thanks to Hendrikje Wagner (HypeRate COO) and the HypeRate Team (HypeRate.io)
+# Their work enables our research.
+
 class recorder:
 
-    def __init__(self, id: str, save_path: str, timeout: int = 15):
+    def __init__(self, hyperate_id: str, save_path: str, timeout: int = 30):
 
         # Parameter Validation
         try:
@@ -18,14 +27,11 @@ class recorder:
             raise AttributeError("You must set the API key as an environmental variable. This can be loaded "
                                  "automatically by placing a '.env' file in the working directory of this program, "
                                  "and with the text: API_KEY = \"[PUT YOUR KEY HERE]\"")
-        if type(id) != str:
+        if type(hyperate_id) != str:
             raise AttributeError("ID must be a string.")
 
         if type(save_path) != str:
             raise AttributeError("save_path must be a string.")
-
-        elif ~os.path.isdir(save_path):
-            raise AttributeError("save_path must be a directory. ")
 
         if type(timeout) != int:
             try:
@@ -36,7 +42,7 @@ class recorder:
             raise AttributeError("Timeout can't be less than 0 or more than a day.")
 
         # Init some vars
-        self.id = id
+        self.id = hyperate_id
         self.timeout = timeout
         self.params = {"topic": f"hr:{self.id}", "event": "phx_join", "payload": {}, "ref": 0}
         self.address = f"wss://app.hyperate.io/socket/websocket?token={self.api_key}"
@@ -46,14 +52,18 @@ class recorder:
         self.start_time = time.time()
         self.data = pd.DataFrame(columns=["UNIX_TIMESTAMP", "HR"])
 
-        # Determine the name and save path
+        # Determine the name and save path, create save dir, and file to save to
         if save_path.endswith(".csv"):
             self.save_path = save_path
         else:
-            file_name=f"HR_{self.id}_{time.strftime('%Y%d%m_%H%M')}.csv"
-            self.save_path = os.path.join(save_path,file_name)
-        if ~os.path.exists(os.path.dirname(self.save_path)):
+            file_name = f"HR_{self.id}_{time.strftime('%Y%d%m_%H%M')}.csv"
+            self.save_path = os.path.join(save_path, file_name)
+        if not os.path.exists(os.path.dirname(self.save_path)):
             os.makedirs(os.path.dirname(self.save_path))
+        with open(self.save_path, 'w') as f_object:
+            writer_object = writer(f_object)
+            writer_object.writerow(['UNIX_TIMESTAMP', 'HR'])
+            f_object.close()
 
         # make the websocket and run it for a while
         self.ws = self.make_websock()
@@ -76,79 +86,107 @@ class recorder:
 
     # Websocket on_action Function
     def on_message(self, ws, message):
-        print(f"on_message: {message}")
+        # print(f"on_message: {message}")
         m = json.loads(message)
         if m['event'] == "hr_update":
+            self.close_beat.cancel()
+            self.close_beat = Timer(self.timeout, self.stop)
+            self.close_beat.start()
+            print(f"{self.id} {time.strftime('%m/%d/%Y %H:%M:%S')} {m['payload']['hr']}")
             self.data = pd.concat([self.data, pd.Series({'UNIX_TIMESTAMP': time.time(),
                                                          "HR": m['payload']['hr']}).to_frame().T])
+            try:
+                with open(self.save_path, 'a') as f_object:
+                    writer_object = writer(f_object)
+                    writer_object.writerow([time.time(), m['payload']['hr']])
+                    f_object.close()
+            except Exception as e:
+                print(e)
+                print(
+                    f"SOME ERROR OCCURRED WHEN SAVING: CRASH SAVING TO {self.save_path}.\nDo not move or alter file "
+                    f"when running.")
+                self.data.to_csv(self.save_path, index=False)
+                self.stop()
+
     def on_error(self, ws, error):
-        print('on_error: ON ERROR CALLED')
-        self.save()
+        # print('on_error: ON ERROR CALLED')
         print(error)
 
     def on_close(self, ws, close_status_code, close_msg):
-        print("on_close: ### closed ###")
-        self.save(restart_beat=False)
-        self.cancel_beats()
+        # print("on_close: ### closed ###")
+        self.stop()
 
     def on_open(self, ws):
-        print("on_open: Opened connection")
+        # print("on_open: Opened connection")
         ws.send(json.dumps(self.params))
-        print("on_open: timer_set")
+        # print("on_open: timer_set")
         self.start_beats()
+        print(
+            f"Connection to Hyperate established with ID {self.id}\n(i) For a better visual go to: app.hyperate.io/{self.id}")
 
     # Beat Functions
     def respond_to_keep_open(self):
-        self.ws.send(json.dumps({
-            "topic": "phoenix",
-            "event": "heartbeat",
-            "payload": {},
-            "ref": 0
-        }))
-        print("respond_to_keep_open: sent HR, timer_set")
-        self.response_beat = Timer(20, self.respond_to_keep_open)
-        self.response_beat.start()
-
-    def continue_or_close(self):
-        last_message_ts = self.get_last_message_ts()
-        print(f"tdelta = {time.time() - last_message_ts}")
-        if time.time() - last_message_ts > self.timeout:
-            self.ws.close()
-            # self.cancel_beats()
-        else:
-            self.close_beat = Timer(self.timeout, self.continue_or_close)
-            self.close_beat.start()
-
-    def save(self, restart_beat=True):
-        self.data.to_csv(self.save_path, index=False)
-        if restart_beat:
-            self.save_beat = Timer(20, self.save)
-            self.save_beat.start()
+        try:
+            self.ws.send(json.dumps({
+                "topic": "phoenix",
+                "event": "heartbeat",
+                "payload": {},
+                "ref": 0
+            }))
+            # print("respond_to_keep_open: sent HR, timer_set")
+            self.response_beat = Timer(20, self.respond_to_keep_open)
+            self.response_beat.start()
+        except websocket._exceptions.WebSocketConnectionClosedException:
+            self.stop()
 
     def get_last_message_ts(self):
         return self.data.UNIX_TIMESTAMP.max()
 
-    # Beat Initializers and Terminators
+    # Beat Initializers
     def start_beats(self):
         self.response_beat = Timer(20, self.respond_to_keep_open)
-        self.close_beat = Timer(self.timeout, self.continue_or_close)
-        self.save_beat = Timer(20, self.save)
-
+        self.close_beat = Timer(self.timeout, self.stop)
         self.response_beat.start()
         self.close_beat.start()
-        self.save_beat.start()
 
-    def cancel_beats(self):
+    # Shut down code
+    def stop(self):
+        print("Stopping...")
+        try:
+            self.ws.close()
+        except websocket._exceptions.WebSocketConnectionClosedException:
+            pass
         self.close_beat.cancel()
         self.response_beat.cancel()
-        self.save_beat.cancel()
         rel.abort()
 
     def get_most_recent_HR(self):
-        return self.data.loc[self.data.TIMESTAMP == self.data.TIMESTAMP.max()]
+        return self.data.loc[self.data.TIMESTAMP == self.data.TIMESTAMP.max()].copy(deep=True)
+
+    def get_all_HR(self):
+        return self.data.copy(deep=True)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog='HypeRate Heartrate Recorder',
+        description='This program uses the HypeRate API to record the heartrate stream from a HypeRate device ID, '
+                    'and save it to a csv file.',
+        epilog='Thank you to HypeRate for making this possible!')
+    parser.add_argument('id', type=str, help="The HypeRate device ID. Example: AB12")
+    parser.add_argument('save_path', type=str, help="The path to where you want to save the file. To "
+                                                    "override default file naming, you can specify a "
+                                                    "filename ending in .csv\nExample: "
+                                                    "/user/Documents\nExample: "
+                                                    "/user/Documents/HR.csv\n(i) If the file exists "
+                                                    "already, it will be overriden.")
+    # argument
+    parser.add_argument('--timeout', type=int, default=30, required=False,
+                        help='Optional. This argument specfies the minimum time allowed between HR signals for the '
+                             'connection to remain open and the program to be running.')
+    args = parser.parse_args()
     load_dotenv()
     websocket.enableTrace(False)
-    w = recorder("FC52", "./data/test.csv")
+    w = recorder(args.id, args.save_path, timeout=args.timeout)
+
+    # hyperate_id: str, save_path: str, timeout: int = 15

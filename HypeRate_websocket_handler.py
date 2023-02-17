@@ -195,7 +195,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     websocket.enableTrace(False)
-    w = Recorder(args.id, args.save_path, timeout=args.timeout)
+    w = Recorder(args.id, args.save_path, timeout=args.timeout, api_key=args.api_key)
     w.begin_recording()
 
     # hyperate_id: str, save_path: str, timeout: int = 15

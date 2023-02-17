@@ -87,7 +87,7 @@ class Recorder:
         self.ws.run_forever(dispatcher=rel)
         # self.ws.run_forever(dispatcher=rel, reconnect=5)
         # Set dispatcher to automatic reconnection, 5 second reconnect delay if connection closed unexpectedly
-        rel.signal(2, rel.abort)  # Keyboard Interrupt
+        rel.signal(2, self.stop)  # Keyboard Interrupt
         rel.dispatch()
 
     # Websocket on_action Function
@@ -102,14 +102,17 @@ class Recorder:
             self.data = pd.concat([self.data, pd.Series({'UNIX_TIMESTAMP': time.time(),
                                                          "HR": m['payload']['hr']}).to_frame().T])
             try:
-                with open(self.save_path, 'a') as f_object:
-                    writer_object = writer(f_object)
-                    writer_object.writerow([time.time(), m['payload']['hr']])
+                if os.path.exists(self.save_path):
+                    with open(self.save_path, 'a') as f_object:
+                        writer_object = writer(f_object)
+                        writer_object.writerow([time.time(), m['payload']['hr']])
+                else:
+                    print(f"WARNING: Original file was moved or deleted. Re-saving entire dataset as {self.save_path}")
+                    self.data.to_csv(self.save_path, index=False)
             except Exception as e:
                 print(e)
                 print(
-                    f"SOME ERROR OCCURRED WHEN SAVING: CRASH SAVING TO {self.save_path}.\nDo not move or alter file "
-                    f"when running.")
+                    f"ERROR OCCURRED WHEN SAVING: CRASH SAVING TO {self.save_path}.")
                 self.data.to_csv(self.save_path, index=False)
                 self.stop()
 
